@@ -43,15 +43,137 @@
   </entry>
   
   <entry>
-    <title>mysql-mvcc-and-transaction-isolation-level</title>
+    <title>理解MySql的MVCC机制和事务隔离级别</title>
     <link href="http://withoutme.github.io/2016/03/24/mysql-mvcc-and-transaction-isolation-level/"/>
     <id>http://withoutme.github.io/2016/03/24/mysql-mvcc-and-transaction-isolation-level/</id>
     <published>2016-03-24T07:37:49.000Z</published>
-    <updated>2016-03-24T07:37:49.000Z</updated>
+    <updated>2016-03-25T03:33:46.000Z</updated>
     
-    <content type="html"></content>
+    <content type="html">&lt;p&gt;数据库要保证隔离性，最简单的办法，写入数据时加写锁(write lock)，也就是写入是排他读的。当事务在修改一行记录时，另一个事务读取这行记录时一定会block住(InnoDB的行级锁)。&lt;br&gt;这能保证一定的隔离性，但会导致更新频繁的DB，读性能会很差。而今天要说的MVCC机制，可以在达到REPEATABLE READ隔离级别的情况下，做到事务写入时，其他多个事务可以并发的读(并且是可重复读)。&lt;br&gt;神奇吧？&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id=&quot;1-事务隔离级别&quot;&gt;&lt;a href=&quot;#1-事务隔离级别&quot; class=&quot;headerlink&quot; title=&quot;1.事务隔离级别&quot;&gt;&lt;/a&gt;1.事务隔离级别&lt;/h2&gt;&lt;p&gt;我们需要先了解下数据库的事务隔离级别，简单说明下：&lt;/p&gt;
+&lt;h4 id=&quot;1-1-READ-UNCOMMITTED&quot;&gt;&lt;a href=&quot;#1-1-READ-UNCOMMITTED&quot; class=&quot;headerlink&quot; title=&quot;1.1.READ UNCOMMITTED&quot;&gt;&lt;/a&gt;1.1.READ UNCOMMITTED&lt;/h4&gt;&lt;p&gt;  READ UNCOMMITTED，即未提交读，该级别事务隔离性最差，能读取到其他事务还未提交的修改(脏读)，也就是读取的结果正确性无法保证。应用中几乎不会使用该隔离级别。&lt;/p&gt;
+&lt;h4 id=&quot;1-2-READ-COMMITTED&quot;&gt;&lt;a href=&quot;#1-2-READ-COMMITTED&quot; class=&quot;headerlink&quot; title=&quot;1.2.READ COMMITTED&quot;&gt;&lt;/a&gt;1.2.READ COMMITTED&lt;/h4&gt;&lt;p&gt;  READ COMMITTED，即提交读，该级别读取到的数据都是事务commit过的修改。&lt;br&gt;但是，在事务的执行过程中，就可能会出现同一条记录，2次读取的结果不一致的情况(如果在第2次读取之前，有一个事务修改了该记录，并commit了)。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th style=&quot;text-align:left&quot;&gt;Transaction 1&lt;/th&gt;
+&lt;th style=&quot;text-align:right&quot;&gt;Transaction 2&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td style=&quot;text-align:left&quot;&gt;BEGIN;&lt;/td&gt;
+&lt;td style=&quot;text-align:right&quot;&gt;BEGIN;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&quot;text-align:left&quot;&gt;SELECT name FROM T1 WHERE id = 123; (return ‘A’)&lt;/td&gt;
+&lt;td style=&quot;text-align:right&quot;&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&quot;text-align:left&quot;&gt;&lt;/td&gt;
+&lt;td style=&quot;text-align:right&quot;&gt;UPDATE T1 SET name = ‘B’ where id = 123;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&quot;text-align:left&quot;&gt;&lt;/td&gt;
+&lt;td style=&quot;text-align:right&quot;&gt;COMMIT;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td style=&quot;text-align:left&quot;&gt;SELECT name FROM T1 WHERE id = 123; (return ‘B’)&lt;/td&gt;
+&lt;td style=&quot;text-align:right&quot;&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h4 id=&quot;1-3-REPEATABLE-READ&quot;&gt;&lt;a href=&quot;#1-3-REPEATABLE-READ&quot; class=&quot;headerlink&quot; title=&quot;1.3.REPEATABLE READ&quot;&gt;&lt;/a&gt;1.3.REPEATABLE READ&lt;/h4&gt;&lt;p&gt;  而REPEATABLE READ，即可重复读，就防止了事务内的多次读取出现不一致的情况，这似乎能让事务所看到的数据是静止不变的，好像并没有其他事务在执行一样，跟其他事务隔离开了，所以，它的&lt;strong&gt;隔离级别&lt;/strong&gt;更高。&lt;br&gt;  但可重复读做不到真正的与其他事务完全隔离，因为它会出现幻读(Phantom Read)的现象。幻读是指在事务中进行多次范围查询(id&amp;lt;10)，结果不一致的现象(由于查询之间，其他事务插入了符合该范围条件的记录)。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;注意：InnoDB的MVCC机制能在REPEATABLE READ的隔离级别下，不出现幻读。&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;是不是觉得MVCC更神奇了？那就接着往下看。&lt;/p&gt;
+&lt;h4 id=&quot;1-4-SERIALIZABLE&quot;&gt;&lt;a href=&quot;#1-4-SERIALIZABLE&quot; class=&quot;headerlink&quot; title=&quot;1.4.SERIALIZABLE&quot;&gt;&lt;/a&gt;1.4.SERIALIZABLE&lt;/h4&gt;&lt;p&gt;SERIALIZABLE，即可串行化，该隔离级别强制让每一个事务按照先后次序依次执行，也即，不会出现多个事务并行执行的情况。可见其完全隔离了其他事务的影响，所以，这是&lt;strong&gt;最高的隔离级别&lt;/strong&gt;。但这会导致极低的并发性，因为每次读都会加锁，并排他读，更不用说写。&lt;/p&gt;
+&lt;h4 id=&quot;1-5-隔离级别总结&quot;&gt;&lt;a href=&quot;#1-5-隔离级别总结&quot; class=&quot;headerlink&quot; title=&quot;1.5.隔离级别总结&quot;&gt;&lt;/a&gt;1.5.隔离级别总结&lt;/h4&gt;&lt;p&gt;事务的4种隔离级别可以总结如下表：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Isolation Level&lt;/th&gt;
+&lt;th style=&quot;text-align:center&quot;&gt;Dirty Read&lt;/th&gt;
+&lt;th style=&quot;text-align:center&quot;&gt;Unrepeatable Read&lt;/th&gt;
+&lt;th style=&quot;text-align:center&quot;&gt;Phantom Read&lt;/th&gt;
+&lt;th style=&quot;text-align:center&quot;&gt;Locking Reads&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;READ UNCOMMITTED&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;READ COMMITTED&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;REPEATABLE READ&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;SERIALIZABLE&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;×&lt;/td&gt;
+&lt;td style=&quot;text-align:center&quot;&gt;√&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;hr&gt;
+&lt;h2 id=&quot;2-MVCC&quot;&gt;&lt;a href=&quot;#2-MVCC&quot; class=&quot;headerlink&quot; title=&quot;2.MVCC&quot;&gt;&lt;/a&gt;2.MVCC&lt;/h2&gt;&lt;h4 id=&quot;2-1-MVCC的机制和原理&quot;&gt;&lt;a href=&quot;#2-1-MVCC的机制和原理&quot; class=&quot;headerlink&quot; title=&quot;2.1 MVCC的机制和原理&quot;&gt;&lt;/a&gt;2.1 MVCC的机制和原理&lt;/h4&gt;&lt;p&gt;主角终于登场了，MVCC，全称&lt;strong&gt;MultiVersion Concurrency Control&lt;/strong&gt;，即多版本并发控制，其工作原理如下：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个事务开始时，有一个&lt;strong&gt;只增&lt;/strong&gt;,&lt;strong&gt;唯一&lt;/strong&gt;的版本号&lt;/li&gt;
+&lt;li&gt;行记录增加&lt;strong&gt;两个隐藏列&lt;/strong&gt;：数据创建时的版本号，过期/删除的版本号&lt;/li&gt;
+&lt;li&gt;事务持有自己的版本号，执行SQL时检查记录的版本号与事务版本号是否『匹配』，具体的匹配规则如下&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;SELECT&lt;/strong&gt;&lt;ul&gt;
+&lt;li&gt;行记录的版本号必须&amp;lt;=事务版本号。&lt;/li&gt;
+&lt;li&gt;注：保证该记录在当前事务开始之前就已存在，或者就是当前事务修改、创建的。如不要求这点，会出现Nonrepeatable READ，也就是读取到后来事务提交的数据&lt;/li&gt;
+&lt;li&gt;删除版本号必须&amp;gt;事务版本号，或者空，&lt;/li&gt;
+&lt;li&gt;注：保证记录没有删除，或者在当前事务之后删除。如不满足，也会出现不可重复读，第一次读到数据，第二次数据被后来事务删除导致读取不到&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;INSERT&lt;/strong&gt;&lt;ul&gt;
+&lt;li&gt;记录当前系统版本号(即当前事务版本号)到该新增行&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;DELETE&lt;/strong&gt;&lt;ul&gt;
+&lt;li&gt;记录当前系统版本号到该删除行的删除版本，以使更新的事务读取不到该记录&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;UPDATE&lt;/strong&gt;&lt;ul&gt;
+&lt;li&gt;拷贝新增一条行记录，使用当前系统版本号作为拷贝行的版本&lt;/li&gt;
+&lt;li&gt;注: 使更老的事务还能重复读取到该记录，而无需加锁&lt;/li&gt;
+&lt;li&gt;把系统版本写入旧记录(被拷贝)的删除版本&lt;/li&gt;
+&lt;li&gt;注: 以使更新的事务读取不到该记录&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&quot;2-2-实例&quot;&gt;&lt;a href=&quot;#2-2-实例&quot; class=&quot;headerlink&quot; title=&quot;2.2 实例&quot;&gt;&lt;/a&gt;2.2 实例&lt;/h4&gt;&lt;p&gt;我们举个例子来说明MVCC的原理，这个例子中使用最低的隔离级别:READ UNCOMMITTED来模拟MVCC，并且能够达到REPETABLE READ。&lt;/p&gt;
+&lt;p&gt;准备工作：首先我们把隔离级别设置为READ UNCOMMITTED；把autocommit关闭，这样我们能用两个命令行窗口模拟出两个并发的事务。&lt;/p&gt;
+&lt;figure class=&quot;highlight plain&quot;&gt;&lt;table&gt;&lt;tr&gt;&lt;td class=&quot;gutter&quot;&gt;&lt;pre&gt;&lt;span class=&quot;line&quot;&gt;1&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;2&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;3&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;4&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;5&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;6&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;7&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;8&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;9&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;10&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;11&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;12&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;13&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;14&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;15&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;16&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;17&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;18&lt;/span&gt;&lt;br&gt;&lt;/pre&gt;&lt;/td&gt;&lt;td class=&quot;code&quot;&gt;&lt;pre&gt;&lt;span class=&quot;line&quot;&gt;mysql&amp;gt; SET GLOBAL tx_isolation=&amp;apos;READ-UNCOMMITTED&amp;apos;;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;Query OK, 0 rows affected (0.00 sec)&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;mysql&amp;gt; SELECT @@global.tx_isolation;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+-----------------------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| @@global.tx_isolation |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+-----------------------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| READ-UNCOMMITTED      |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+-----------------------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;1 row in set (0.00 sec)&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;mysql&amp;gt; SET autocommit=0;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;Query OK, 0 rows affected (0.00 sec)&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;mysql&amp;gt; show variables like &amp;apos;%autocommit&amp;apos;;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+---------------+-------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| Variable_name | Value |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+---------------+-------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| autocommit    | OFF   |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+---------------+-------+&lt;/span&gt;&lt;br&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&lt;/figure&gt;
+&lt;p&gt;我们有一个最简单的user表，只有两列，一列自增id，一列name。为了模拟MVCC，我们增加3个隐藏列：_serial: 记录序号, create_tid:创建的事务id(事务版本号), delete_tid:删除的事务id。注意隐藏列对数据库使用者不可见。&lt;/p&gt;
+&lt;figure class=&quot;highlight plain&quot;&gt;&lt;table&gt;&lt;tr&gt;&lt;td class=&quot;gutter&quot;&gt;&lt;pre&gt;&lt;span class=&quot;line&quot;&gt;1&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;2&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;3&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;4&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;5&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;6&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;7&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;8&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;9&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;10&lt;/span&gt;&lt;br&gt;&lt;/pre&gt;&lt;/td&gt;&lt;td class=&quot;code&quot;&gt;&lt;pre&gt;&lt;span class=&quot;line&quot;&gt;mysql&amp;gt; DESC user;&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+------------+--------------+------+-----+---------+----------------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| Field      | Type         | Null | Key | Default | Extra          |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+------------+--------------+------+-----+---------+----------------+&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| _serial    | int(10)      | NO   | PRI | NULL    | auto_increment |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| id         | int(10)      | NO   |     | 0       |                |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| name       | varchar(100) | NO   |     |         |                |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| _create_id | int(10)      | YES  |     | NULL    |                |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;| _delete_id | int(10)      | YES  |     | NULL    |                |&lt;/span&gt;&lt;br&gt;&lt;span class=&quot;line&quot;&gt;+------------+--------------+------+-----+---------+----------------+&lt;/span&gt;&lt;br&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;&lt;/figure&gt;
+&lt;p&gt;to be continued…&lt;/p&gt;
+</content>
     
     <summary type="html">
+    
+      &lt;p&gt;数据库要保证隔离性，最简单的办法，写入数据时加写锁(write lock)，也就是写入是排他读的。当事务在修改一行记录时，另一个事务读取这行记录时一定会block住(InnoDB的行级锁)。&lt;br&gt;这能保证一定的隔离性，但会导致更新频繁的DB，读性能会很差。而今天要说的MV
     
     </summary>
     

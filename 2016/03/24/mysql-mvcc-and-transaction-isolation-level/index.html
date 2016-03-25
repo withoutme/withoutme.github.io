@@ -1,203 +1,224 @@
-<!DOCTYPE html>
+<!DOCTYPE HTML>
 <html>
 <head>
   <meta charset="utf-8">
   
-  <title>mysql-mvcc-and-transaction-isolation-level | without me</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <meta name="description">
-<meta property="og:type" content="article">
-<meta property="og:title" content="mysql-mvcc-and-transaction-isolation-level">
-<meta property="og:url" content="http://withoutme.github.io/2016/03/24/mysql-mvcc-and-transaction-isolation-level/index.html">
-<meta property="og:site_name" content="without me">
-<meta property="og:description">
-<meta property="og:updated_time" content="2016-03-24T07:37:49.000Z">
-<meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="mysql-mvcc-and-transaction-isolation-level">
-<meta name="twitter:description">
+  <title>理解MySql的MVCC机制和事务隔离级别 | without me</title>
+  <meta name="author" content="withoutme.hw@gmail.com">
+
   
-    <link rel="alternate" href="/atom.xml" title="without me" type="application/atom+xml">
+  <meta name="description" content="数据库要保证隔离性，最简单的办法，写入数据时加写锁(write lock)，也就是写入是排他读的。当事务在修改一行记录时，另一个事务读取这行记录时一定会block住(InnoDB的行级锁)。这能保证一定的隔离性，但会导致更新频繁的DB，读性能会很差。而今天要说的MVCC机制，可以在达到REPEATA">
   
-  
-    <link rel="icon" href="/favicon.png">
-  
-  
-    <link href="//fonts.googleapis.com/css?family=Source+Code+Pro" rel="stylesheet" type="text/css">
-  
-  <link rel="stylesheet" href="/css/style.css">
   
 
+  <link rel="alternate" href="/atom.xml" title="without me" type="application/atom+xml">
+  <link rel="stylesheet" href="/css/style.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+  <script src="//ajax.googleapis.com/ajax/libs/jquery/1.8/jquery.min.js"></script>
+  
 </head>
 
 <body>
-  <div id="container">
-    <div id="wrap">
-      <header id="header">
-  <div id="banner"></div>
-  <div id="header-outer" class="outer">
-    <div id="header-title" class="inner">
-      <h1 id="logo-wrap">
-        <a href="/" id="logo">without me</a>
-      </h1>
-      
-        <h2 id="subtitle-wrap">
-          <a href="/" id="subtitle">分享&amp;成长</a>
-        </h2>
-      
-    </div>
-    <div id="header-inner" class="inner">
-      <nav id="main-nav">
-        <a id="main-nav-toggle" class="nav-icon"></a>
-        
-          <a class="main-nav-link" href="/">Home</a>
-        
-          <a class="main-nav-link" href="/archives">Archives</a>
-        
-      </nav>
-      <nav id="sub-nav">
-        
-          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
-        
-        <a id="nav-search-btn" class="nav-icon" title="Søk"></a>
-      </nav>
-      <div id="search-form-wrap">
-        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" results="0" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="http://withoutme.github.io"></form>
-      </div>
-    </div>
-  </div>
-</header>
-      <div class="outer">
-        <section id="main"><article id="post-mysql-mvcc-and-transaction-isolation-level" class="article article-type-post" itemscope itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2016/03/24/mysql-mvcc-and-transaction-isolation-level/" class="article-date">
-  <time datetime="2016-03-24T07:37:49.000Z" itemprop="datePublished">2016-03-24</time>
-</a>
+  <header id="header" class="inner"><nav>
+  <ul>
     
-  </div>
-  <div class="article-inner">
+      <li><a href="/">Home</a></li>
     
+      <li><a href="/archives">Archives</a></li>
     
-      <header class="article-header">
-        
+  </ul>
+</nav></header>
+  <div id="content" class="inner"><article class="post">
   
-    <h1 class="article-title" itemprop="name">
-      mysql-mvcc-and-transaction-isolation-level
-    </h1>
+    <div class="gallery">
+  <div class="photoset">
+    
+      <img src="">
+    
+  </div>
+  <div class="control">
+    <div class="prev"></div>
+    <div class="next"></div>
+  </div>
+</div>
+  
+  <header>
+    
+  
+    <h1 class="title">理解MySql的MVCC机制和事务隔离级别</h1>
   
 
-      </header>
+    <time datetime="2016-03-24T07:37:49.000Z">
+  <span class="day">24</span><span class="month">Mar</span>
+</time>
+  </header>
+  <div class="entry-content">
     
-    <div class="article-entry" itemprop="articleBody">
+      <p>数据库要保证隔离性，最简单的办法，写入数据时加写锁(write lock)，也就是写入是排他读的。当事务在修改一行记录时，另一个事务读取这行记录时一定会block住(InnoDB的行级锁)。<br>这能保证一定的隔离性，但会导致更新频繁的DB，读性能会很差。而今天要说的MVCC机制，可以在达到REPEATABLE READ隔离级别的情况下，做到事务写入时，其他多个事务可以并发的读(并且是可重复读)。<br>神奇吧？</p>
+<hr>
+<h2 id="1-事务隔离级别"><a href="#1-事务隔离级别" class="headerlink" title="1.事务隔离级别"></a>1.事务隔离级别</h2><p>我们需要先了解下数据库的事务隔离级别，简单说明下：</p>
+<h4 id="1-1-READ-UNCOMMITTED"><a href="#1-1-READ-UNCOMMITTED" class="headerlink" title="1.1.READ UNCOMMITTED"></a>1.1.READ UNCOMMITTED</h4><p>  READ UNCOMMITTED，即未提交读，该级别事务隔离性最差，能读取到其他事务还未提交的修改(脏读)，也就是读取的结果正确性无法保证。应用中几乎不会使用该隔离级别。</p>
+<h4 id="1-2-READ-COMMITTED"><a href="#1-2-READ-COMMITTED" class="headerlink" title="1.2.READ COMMITTED"></a>1.2.READ COMMITTED</h4><p>  READ COMMITTED，即提交读，该级别读取到的数据都是事务commit过的修改。<br>但是，在事务的执行过程中，就可能会出现同一条记录，2次读取的结果不一致的情况(如果在第2次读取之前，有一个事务修改了该记录，并commit了)。</p>
+<table>
+<thead>
+<tr>
+<th style="text-align:left">Transaction 1</th>
+<th style="text-align:right">Transaction 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left">BEGIN;</td>
+<td style="text-align:right">BEGIN;</td>
+</tr>
+<tr>
+<td style="text-align:left">SELECT name FROM T1 WHERE id = 123; (return ‘A’)</td>
+<td style="text-align:right"></td>
+</tr>
+<tr>
+<td style="text-align:left"></td>
+<td style="text-align:right">UPDATE T1 SET name = ‘B’ where id = 123;</td>
+</tr>
+<tr>
+<td style="text-align:left"></td>
+<td style="text-align:right">COMMIT;</td>
+</tr>
+<tr>
+<td style="text-align:left">SELECT name FROM T1 WHERE id = 123; (return ‘B’)</td>
+<td style="text-align:right"></td>
+</tr>
+</tbody>
+</table>
+<h4 id="1-3-REPEATABLE-READ"><a href="#1-3-REPEATABLE-READ" class="headerlink" title="1.3.REPEATABLE READ"></a>1.3.REPEATABLE READ</h4><p>  而REPEATABLE READ，即可重复读，就防止了事务内的多次读取出现不一致的情况，这似乎能让事务所看到的数据是静止不变的，好像并没有其他事务在执行一样，跟其他事务隔离开了，所以，它的<strong>隔离级别</strong>更高。<br>  但可重复读做不到真正的与其他事务完全隔离，因为它会出现幻读(Phantom Read)的现象。幻读是指在事务中进行多次范围查询(id&lt;10)，结果不一致的现象(由于查询之间，其他事务插入了符合该范围条件的记录)。</p>
+<blockquote>
+<p><strong>注意：InnoDB的MVCC机制能在REPEATABLE READ的隔离级别下，不出现幻读。</strong></p>
+</blockquote>
+<p>是不是觉得MVCC更神奇了？那就接着往下看。</p>
+<h4 id="1-4-SERIALIZABLE"><a href="#1-4-SERIALIZABLE" class="headerlink" title="1.4.SERIALIZABLE"></a>1.4.SERIALIZABLE</h4><p>SERIALIZABLE，即可串行化，该隔离级别强制让每一个事务按照先后次序依次执行，也即，不会出现多个事务并行执行的情况。可见其完全隔离了其他事务的影响，所以，这是<strong>最高的隔离级别</strong>。但这会导致极低的并发性，因为每次读都会加锁，并排他读，更不用说写。</p>
+<h4 id="1-5-隔离级别总结"><a href="#1-5-隔离级别总结" class="headerlink" title="1.5.隔离级别总结"></a>1.5.隔离级别总结</h4><p>事务的4种隔离级别可以总结如下表：</p>
+<table>
+<thead>
+<tr>
+<th>Isolation Level</th>
+<th style="text-align:center">Dirty Read</th>
+<th style="text-align:center">Unrepeatable Read</th>
+<th style="text-align:center">Phantom Read</th>
+<th style="text-align:center">Locking Reads</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>READ UNCOMMITTED</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">×</td>
+</tr>
+<tr>
+<td>READ COMMITTED</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">×</td>
+</tr>
+<tr>
+<td>REPEATABLE READ</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">√</td>
+<td style="text-align:center">×</td>
+</tr>
+<tr>
+<td>SERIALIZABLE</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">×</td>
+<td style="text-align:center">√</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="2-MVCC"><a href="#2-MVCC" class="headerlink" title="2.MVCC"></a>2.MVCC</h2><h4 id="2-1-MVCC的机制和原理"><a href="#2-1-MVCC的机制和原理" class="headerlink" title="2.1 MVCC的机制和原理"></a>2.1 MVCC的机制和原理</h4><p>主角终于登场了，MVCC，全称<strong>MultiVersion Concurrency Control</strong>，即多版本并发控制，其工作原理如下：</p>
+<ul>
+<li>每个事务开始时，有一个<strong>只增</strong>,<strong>唯一</strong>的版本号</li>
+<li>行记录增加<strong>两个隐藏列</strong>：数据创建时的版本号，过期/删除的版本号</li>
+<li>事务持有自己的版本号，执行SQL时检查记录的版本号与事务版本号是否『匹配』，具体的匹配规则如下<ul>
+<li><strong>SELECT</strong><ul>
+<li>行记录的版本号必须&lt;=事务版本号。</li>
+<li>注：保证该记录在当前事务开始之前就已存在，或者就是当前事务修改、创建的。如不要求这点，会出现Nonrepeatable READ，也就是读取到后来事务提交的数据</li>
+<li>删除版本号必须&gt;事务版本号，或者空，</li>
+<li>注：保证记录没有删除，或者在当前事务之后删除。如不满足，也会出现不可重复读，第一次读到数据，第二次数据被后来事务删除导致读取不到</li>
+</ul>
+</li>
+<li><strong>INSERT</strong><ul>
+<li>记录当前系统版本号(即当前事务版本号)到该新增行</li>
+</ul>
+</li>
+<li><strong>DELETE</strong><ul>
+<li>记录当前系统版本号到该删除行的删除版本，以使更新的事务读取不到该记录</li>
+</ul>
+</li>
+<li><strong>UPDATE</strong><ul>
+<li>拷贝新增一条行记录，使用当前系统版本号作为拷贝行的版本</li>
+<li>注: 使更老的事务还能重复读取到该记录，而无需加锁</li>
+<li>把系统版本写入旧记录(被拷贝)的删除版本</li>
+<li>注: 以使更新的事务读取不到该记录</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h4 id="2-2-实例"><a href="#2-2-实例" class="headerlink" title="2.2 实例"></a>2.2 实例</h4><p>我们举个例子来说明MVCC的原理，这个例子中使用最低的隔离级别:READ UNCOMMITTED来模拟MVCC，并且能够达到REPETABLE READ。</p>
+<p>准备工作：首先我们把隔离级别设置为READ UNCOMMITTED；把autocommit关闭，这样我们能用两个命令行窗口模拟出两个并发的事务。</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line">mysql&gt; SET GLOBAL tx_isolation=&apos;READ-UNCOMMITTED&apos;;</span><br><span class="line">Query OK, 0 rows affected (0.00 sec)</span><br><span class="line">mysql&gt; SELECT @@global.tx_isolation;</span><br><span class="line">+-----------------------+</span><br><span class="line">| @@global.tx_isolation |</span><br><span class="line">+-----------------------+</span><br><span class="line">| READ-UNCOMMITTED      |</span><br><span class="line">+-----------------------+</span><br><span class="line">1 row in set (0.00 sec)</span><br><span class="line"></span><br><span class="line">mysql&gt; SET autocommit=0;</span><br><span class="line">Query OK, 0 rows affected (0.00 sec)</span><br><span class="line">mysql&gt; show variables like &apos;%autocommit&apos;;</span><br><span class="line">+---------------+-------+</span><br><span class="line">| Variable_name | Value |</span><br><span class="line">+---------------+-------+</span><br><span class="line">| autocommit    | OFF   |</span><br><span class="line">+---------------+-------+</span><br></pre></td></tr></table></figure>
+<p>我们有一个最简单的user表，只有两列，一列自增id，一列name。为了模拟MVCC，我们增加3个隐藏列：_serial: 记录序号, create_tid:创建的事务id(事务版本号), delete_tid:删除的事务id。注意隐藏列对数据库使用者不可见。</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">mysql&gt; DESC user;</span><br><span class="line">+------------+--------------+------+-----+---------+----------------+</span><br><span class="line">| Field      | Type         | Null | Key | Default | Extra          |</span><br><span class="line">+------------+--------------+------+-----+---------+----------------+</span><br><span class="line">| _serial    | int(10)      | NO   | PRI | NULL    | auto_increment |</span><br><span class="line">| id         | int(10)      | NO   |     | 0       |                |</span><br><span class="line">| name       | varchar(100) | NO   |     |         |                |</span><br><span class="line">| _create_id | int(10)      | YES  |     | NULL    |                |</span><br><span class="line">| _delete_id | int(10)      | YES  |     | NULL    |                |</span><br><span class="line">+------------+--------------+------+-----+---------+----------------+</span><br></pre></td></tr></table></figure>
+<p>to be continued…</p>
+
+    
+    
+    <footer class="meta">
       
-        
-      
-    </div>
-    <footer class="article-footer">
-      <a data-url="http://withoutme.github.io/2016/03/24/mysql-mvcc-and-transaction-isolation-level/" data-id="cim5yz8ld0002xotpz661wt1w" class="article-share-link">Share</a>
       
       
     </footer>
+    
   </div>
   
-    
-<nav id="article-nav">
-  
-    <a href="/2016/03/24/hello-world/" id="article-nav-newer" class="article-nav-link-wrap">
-      <strong class="article-nav-caption">Newer</strong>
-      <div class="article-nav-title">
-        
-          姬红晶是傻逼
-        
-      </div>
-    </a>
+</article></div>
+  <footer id="footer" class="inner"><div class="social alignright">
   
   
-    <a href="/2016/03/24/hello-world-1/" id="article-nav-older" class="article-nav-link-wrap">
-      <strong class="article-nav-caption">Older</strong>
-      <div class="article-nav-title">hello world</div>
-    </a>
   
-</nav>
-
   
-</article>
-
-</section>
-        
-          <aside id="sidebar">
+  <a class="rss" href="/atom.xml" title="RSS">RSS</a>
+</div>
+<p>
   
-    
-
+  &copy; 2016 withoutme.hw@gmail.com
   
-    
-
-  
-    
-  
-    
-  <div class="widget-wrap">
-    <h3 class="widget-title">Arkiv</h3>
-    <div class="widget">
-      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a></li></ul>
-    </div>
-  </div>
+</p>
+<div class="clearfix"></div></footer>
+  <script src="/js/jquery.imagesloaded.min.js"></script>
+<script src="/js/gallery.js"></script>
 
 
-  
-    
-  <div class="widget-wrap">
-    <h3 class="widget-title">Siste innlegg</h3>
-    <div class="widget">
-      <ul>
-        
-          <li>
-            <a href="/2016/03/24/hello-world/">姬红晶是傻逼</a>
-          </li>
-        
-          <li>
-            <a href="/2016/03/24/mysql-mvcc-and-transaction-isolation-level/">mysql-mvcc-and-transaction-isolation-level</a>
-          </li>
-        
-          <li>
-            <a href="/2016/03/24/hello-world-1/">hello world</a>
-          </li>
-        
-      </ul>
-    </div>
-  </div>
-
-  
-</aside>
-        
-      </div>
-      <footer id="footer">
-  
-  <div class="outer">
-    <div id="footer-info" class="inner">
-      &copy; 2016 withoutme.hw@gmail.com<br>
-      Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
-    </div>
-  </div>
-</footer>
-    </div>
-    <nav id="mobile-nav">
-  
-    <a href="/" class="mobile-nav-link">Home</a>
-  
-    <a href="/archives" class="mobile-nav-link">Archives</a>
-  
-</nav>
-    
-
-<script src="//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js"></script>
 
 
-  <link rel="stylesheet" href="/fancybox/jquery.fancybox.css">
-  <script src="/fancybox/jquery.fancybox.pack.js"></script>
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.css" media="screen" type="text/css">
+<script src="/fancybox/jquery.fancybox.pack.js"></script>
+<script type="text/javascript">
+(function($){
+  $('.fancybox').fancybox();
+})(jQuery);
+</script>
 
 
-<script src="/js/script.js"></script>
-
-  </div>
+<div id="phasebeam">
+  <canvas></canvas>
+  <canvas></canvas>
+  <canvas></canvas>
+</div>
+<script src="/js/phasebeam.js"></script>
 </body>
 </html>
